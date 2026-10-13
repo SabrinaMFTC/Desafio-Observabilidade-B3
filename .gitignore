@@ -1,0 +1,7 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Metadados do Windows ao copiar arquivos baixados para o WSL
+*:Zone.Identifier

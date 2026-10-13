@@ -1,0 +1,78 @@
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_METRIC_EXPORT_INTERVAL: "5000"
+  OTEL_PYTHON_FLASK_EXCLUDED_URLS: "health,metrics"
+
+x-prometheus-env: &prometheus-env
+  PROMETHEUS_DISABLE_CREATED_SERIES: "true"
+
+# A imagem slim não tem curl; o próprio Python faz a requisição.
+x-app-healthcheck: &app-healthcheck
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+  interval: 5s
+  timeout: 3s
+  retries: 10
+  start_period: 5s
+
+services:
+  # O nome "api" é o host usado pelo load.js.
+  api:
+    build: ./live-sync
+    ports:
+      - "8080:8080"
+    environment:
+      <<: [*otel-env, *prometheus-env]
+      OTEL_SERVICE_NAME: live-sync
+      MUSIC_CATALOG_URL: http://music-catalog:8080
+      MUSIC_CATALOG_TIMEOUT_S: "2"
+    depends_on:
+      music-catalog:
+        condition: service_healthy
+      lgtm:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+
+  music-catalog:
+    build: ./music-catalog
+    environment:
+      <<: [*otel-env, *prometheus-env]
+      OTEL_SERVICE_NAME: music-catalog
+      # Comportamento simulado: ajuste aqui para provocar falhas e lentidão.
+      FAILURE_RATE: "${FAILURE_RATE:-0.05}"
+      LATENCY_MIN_MS: "10"
+      LATENCY_MAX_MS: "50"
+      SLOW_RATE: "${SLOW_RATE:-0.02}"
+      SLOW_MIN_MS: "1000"
+      SLOW_MAX_MS: "3000"
+    depends_on:
+      lgtm:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+
+  lgtm:
+    image: grafana/otel-lgtm:0.36.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/custom/dashboard.json
+    volumes:
+      - lgtm-data:/data
+      - ./prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      - ./dashboard.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/dashboard.json:ro
+      - ./grafana-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
+
+  k6-load-test:
+    image: grafana/k6:2.3.0
+    volumes:
+      - ./load.js:/load.js:ro
+    command: run /load.js
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  lgtm-data:
